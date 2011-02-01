@@ -1,0 +1,24 @@
+<html>
+<head>
+<script type="text/javascript" src="jvm-loader.js"></script>
+<script type="text/javascript" src="jvm.js"></script>
+</head>
+<body>
+<script type="text/javascript">
+var log = function(s) { document.getElementById("log").innerHTML += s.replace(/\</g, "&lt;") + "<br>"; };
+
+loadClassFromFile("sandbox/hello/Hello.class", function(data) {
+  var c = parseJavaClass(data);
+  loaded(c);
+});
+
+function loaded(classFile) {
+  var factory = createFactory(classFile);
+  var obj = factory.create();
+
+  obj.main([]);
+  log(uneval(classFile));
+}
+</script>
+<p id="log"></p>
+</body></html>
