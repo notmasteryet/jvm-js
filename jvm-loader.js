@@ -63,7 +63,6 @@ function parseJavaClass(classContent, callback) {
       break;
     case 8:
       info.type = "CONSTANT_String";
-      info.value_type = "Ljava/lang/String;";
       var string_index = reader.readU2();
       info.update = function(cp) {
         this.value = cp[string_index].value;

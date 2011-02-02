@@ -1,16 +1,3 @@
-/*
-BaseType Character 	Type 	Interpretation
-B 	byte 	signed byte
-C 	char 	Unicode character
-D 	double 	double-precision floating-point value
-F 	float 	single-precision floating-point value
-I 	int 	integer
-J 	long 	long integer
-L<classname>; 	reference 	an instance of class <classname>
-S 	short 	signed short
-Z 	boolean 	true or false
-[ 	reference 	one array dimension 
-*/
 function JVMjs(method, constant_pool, obj, args) {
   function getValueCategory(value) {
     return value.type === "D" || value.type === "J" ? 2 : 1;
@@ -18,7 +5,7 @@ function JVMjs(method, constant_pool, obj, args) {
 
   function getArgumentsFromDescriptor(descriptor) {
     var i = descriptor.indexOf("("), j = descriptor.indexOf(")");
-    var regexp = /\[+(L[^;]*;|[BCDFIJSZ])/g;
+    var regexp = /\[*(L[^;]*;|[BCDFIJSZ])/g;
     var args = [], m, argsString = descriptor.substring(i + 1, j);
     while ((m = regexp.exec(argsString)) !== null) {
       args.push(m[0]);
@@ -37,29 +24,46 @@ function JVMjs(method, constant_pool, obj, args) {
   var bytecode = methodCode.code;
   var stack = [];
   var locals = [];
-  if (isStatic) {
+  if (!isStatic) {
     locals.push(obj);
   }
   for (var i = 0; i < argumentDescriptions.length; i++) {
     locals.push(args[i]);
   }
 
-  var cp = 0;
+  var cp = 0, lastCp;
   var state = null;
   var wideFound = false;
 
   this.execute = function() {
-var u = 300;
-    this.stopState = null;
-    while(this.step() && u-- > 0);
+    var limit = 300;
+    while(this.step() && limit-- > 0);
     this.stopState = state;
-uneval(state);
+    log(uneval(state));
   };
 
+  this.executeAll = function() {
+    do {
+      this.execute();
+
+      if (state.name === "getstatic") {
+        var field = state.field;
+        if (field.class_.name === "java/lang/System" && field.name_and_type.name === "out") {
+          log("System.out");
+          state.result = { println : function(s) { log(s); } };
+        }
+      } else if (state.name === "invokevirtual") {
+        var method = state.method;
+        if (method.class_.name === "java/io/PrintStream") {
+          log("println");
+          state.result = state.object[method.name_and_type.name].apply(state.object, state.args);
+        }
+      }
+    } while(state.name !== "return");
+    return state.return_value;
+  };
 
   this.step = function() {
-    state = null;
-
     function validateArrayref(arrayref) {
       if (arrayref === null) {
         raiseException("Ljava/lang/NullPointerException;");
@@ -68,12 +72,19 @@ uneval(state);
 
     function validateArrayrefAndIndex(arrayref, index) {
       validateArrayref(arrayref);
-      if (!(index.value >= 0 || index.value < arrayref.length)) {
-        raiseException("Ljava/lang/????;");
+      if (!(index.value >= 0 && index.value < arrayref.length)) {
+        raiseException("Ljava/lang/ArrayIndexOutOfBoundsException;");
       }
     }
 
     function raiseException(typeName) {
+      state = { name: "newexception", class_name: typeName };
+      throw "Exception raised: " + typeName;
+    }
+
+    function processThrow(objectref) {
+      // check table
+      state = { name: "throw", object: objectref, code_pointer: lastCp };
     }
 
     function validateNonNull(objectref) {
@@ -143,10 +154,37 @@ uneval(state);
       return 1;
     }
 
-    var op = bytecode[cp++];
-    var jumpToAddress = null;
-log("OP="+ op + ";CP=" + (cp-1));
-    switch (op) {
+    if (state !== null) {
+      if ("exception" in state) {
+        var objectref = state.exception;
+        stack.push(objectref);
+        processThrow(objectref);
+        return state === null;
+      }
+      switch (state.name) {
+      case "getstatic":
+      case "getfield":
+        stack.push(state.result);
+        break;
+      case "invokevirtual":
+        // void ???
+      case "setstatic":
+      case "setfield":
+        break;
+      default:
+        log("Unexpected return: " + state.name);
+      }
+      state = null;
+    }
+
+    lastCp = cp;
+
+    try {
+      var op = bytecode[cp++];
+      var jumpToAddress = null;
+      log("OP="+ op + ";CP=" + (cp-1));
+
+switch (op) {
 case 0: // (0x00) nop
   break;
 case 1: // (0x01) aconst_null
@@ -189,19 +227,23 @@ case 17: // (0x11) sipush
   break;
 case 18: // (0x12) ldc
   var index = bytecode[cp++];
-  stack.push({
-    value: constant_pool[index].value, 
-    type: constant_pool[index].type_value
-  });
+  var const_ = constant_pool[index];
+  if ("value_type" in const_) {
+    stack.push({value: const_.value, type: const_.value_type});
+  } else {
+    stack.push(const_.value);
+  }
   break;
 case 19: // (0x13) ldc_w
 case 20: // (0x14) ldc2_w
   var index = (bytecode[cp] << 8) | bytecode[cp + 1];
   cp += 2;
-  stack.push({
-    value: constant_pool[index].value, 
-    type: constant_pool[index].type_value
-  });
+  var const_ = constant_pool[index];
+  if ("value_type" in const_) {
+    stack.push({value: const_.value, type: const_.value_type});
+  } else {
+    stack.push(const_.value);
+  }
   break;
 case 21: // (0x15) iload
 case 22: // (0x16) lload
@@ -870,6 +912,9 @@ case 173: // (0xad) lreturn
 case 174: // (0xae) freturn
 case 175: // (0xaf) dreturn
 case 176: // (0xb0) areturn
+  var value = stack.pop();
+  state = { name: "return", return_value: value };
+  break;
 case 177: // (0xb1) return
   state = { name: "return" };
   break;
@@ -965,7 +1010,8 @@ case 190: // (0xbe) arraylength
 case 191: // (0xbf) athrow
   var objectref = stack.pop();
   validateNotNull(objectref);
-  state = { name: "throw", object: objectref };
+  stack.push(objectref);
+  processThrow(objectref);
   break;
 case 192: // (0xc0) checkcast
   var index = (bytecode[cp] << 8) | bytecode[cp + 1];
@@ -1034,11 +1080,16 @@ case 255: // (0xff) impdep2
 default:
   state = {name:"error", message: "invalid operation " + op + " @" + cp };
   break;
-    }
-
-if (jumpToAddress !== null) {
-  cp = jumpToAddress;
 }
+      if (jumpToAddress !== null) {
+        cp = jumpToAddress;
+      }
+    } catch(e) {
+      log(e);
+      if (state === null) {
+        state = {name:"error", message: "Unexpected exception: " + e};
+      }
+    }
 
     return state === null;
   };
@@ -1054,12 +1105,22 @@ function createFactory(classFile) {
       (function(method) {
         obj[method.name] = function() {
           var vm = new JVMjs(method, classFile.constant_pool, obj, arguments);
-          return vm.execute();
+          return vm.executeAll();
         };
       })(classFile.methods[i]);
     }
     return obj;
   }  
-  return { create: create };
+  var statics = {};
+  for (var i = 0, l = classFile.methods.length; i < l; ++i) {
+    if (!("ACC_STATIC" in classFile.methods[i].access_flags)) { continue; }
+    (function(method) {
+      statics[method.name] = function() {
+        var vm = new JVMjs(method, classFile.constant_pool, null, arguments);
+        return vm.executeAll();
+      };
+    })(classFile.methods[i]);
+  }
+  return { create: create, statics: statics };
 }
 

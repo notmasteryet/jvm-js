@@ -14,9 +14,9 @@ loadClassFromFile("sandbox/hello/Hello.class", function(data) {
 
 function loaded(classFile) {
   var factory = createFactory(classFile);
-  var obj = factory.create();
-
-  obj.main([]);
+//  var obj = factory.create();
+//  obj.main([]);
+  factory.statics.main([]);
   log(uneval(classFile));
 }
 </script>
