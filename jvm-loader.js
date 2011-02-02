@@ -1,4 +1,4 @@
-function parseJavaClass(classContent, callback) {
+function parseJavaClass(classContent) {
   var readPosition = 0;
   var reader = {
     readU1: function() { return classContent[readPosition++]; },
@@ -145,9 +145,7 @@ function parseJavaClass(classContent, callback) {
 
   function read_access_flags() {
     var access_flags = reader.readU2();
-    var flags = { 
-//      valueOf: function() { return access_flags; } 
-    };
+    var flags = {};
     if ((access_flags & 0x0001) !== 0) { flags.ACC_PUBLIC = true; }
     if ((access_flags & 0x0002) !== 0) { flags.ACC_PRIVATE = true; }
     if ((access_flags & 0x0004) !== 0) { flags.ACC_PROTECTED = true; }
@@ -385,19 +383,14 @@ function parseJavaClass(classContent, callback) {
   return classFile;
 }
 
-function loadClassFromFile(classUrl, callback) {
+function loadClassFromFileAsync(classUrl, callback) {
   var request = new XMLHttpRequest();
   request.onreadystatechange = function() {
     if(request.readyState == 4) {
-      var data;
-      if(typeof Uint8Array === "function") {
-        data = new Uint8Array(request.mozResponseArrayBuffer);
-      } else {
-        var s =  request.responseText;
-        data = [];
-        for (var j = 0, l = s.length; j < l; ++j) {
-          data.push(s.charCodeAt(j) & 0xFF);
-        }
+      var data = [];
+      var s = request.responseText;
+      for (var j = 0, l = s.length; j < l; ++j) {
+        data.push(s.charCodeAt(j) & 0xFF);
       }
       callback(data);
     }
@@ -407,121 +400,17 @@ function loadClassFromFile(classUrl, callback) {
   request.send();
 }
 
-function LongValue(bytes) {
-  this.bytes = bytes;
-}
-LongValue.prototype = {
-  sign: function() {    
-    if (this.bytes[0] >= 0x80) {
-      return -1;
-    }
-    var i = 0;
-    while(i < 8 && this.bytes[i] === 0) {
-      ++i;
-    }
-    return i < 8 ? 1 : 0;
-  },
-  add: function(other) {
-    var c = 0, result = [];
-    for (var i = 7; i >= 0; i--) {
-      var n = c + this.bytes[i] + other.bytes[i];
-      c = 0;
-      while (n >= 0x100) {
-        n -= 0x100;
-        c++;
-      }
-      result[i] = n;
-    }
-    return new LongValue(result);
-  },
-  not: function() {
-    var result = [];
-    for (var i = 0; i < 8; i++) {
-      result.push(0x100 - this.bytes[i]);
-    }
-    return new LongValue(result);
-  },
-  neg: function() {
-    return this.not().add(LongValue.One);
-  },
-  sub: function(other) {
-    return this.add(other.neg());
-  },
-  cmp: function(other) {
-    return this.sub(other).sign();
-  },
-  mul: function(other) {
-    throw "not implemented";
-  },
-  div: function(other) {
-    throw "not implemented";
-  },
-  rem: function(other) {
-    return this.sub(this.div(other).mul(other));
-  },
-  shl: function(sh) {
-    throw "not implemented";
-  },
-  shr: function(sh) {
-    throw "not implemented";
-  },
-  ushr: function(sh) {
-    throw "not implemented";
-  },
-  and: function(other) {
-    var result = [];
-    for (var i = 0; i < 8; ++i) {
-      result[i] = this.bytes[i] & other.bytes[i];
-    }
-    return new LongValue(result);
-  },
-  or: function(other) {
-    var result = [];
-    for (var i = 0; i < 8; ++i) {
-      result[i] = this.bytes[i] | other.bytes[i];
-    }
-    return new LongValue(result);
-  },
-  xor: function(other) {
-    var result = [];
-    for (var i = 0; i < 8; ++i) {
-      result[i] = this.bytes[i] ^ other.bytes[i];
-    }
-    return new LongValue(result);
-  },
-  toNumeric: function() {
-    var sign = 1, bytes = this.bytes;
-    if (this.sign() < 0) {
-      sign = -1;
-      bytes = this.neg().bytes;
-    }
-    var resultValue = 0;
-    for (var i = 0; i < bytes.length; ++i) {
-      resultValue = resultValue * 256 + bytes[i];    
-    }
-    return resultValue * sign;
-  }
-};
-LongValue.fromNumeric = function(value) {
-  var sign = 1, bytes = [];
-  if (value < 0) {
-    sign = -1;
-    value = -value;
-  }
-  var n = Math.floor(value);
-  for (var i = 7; i >= 0; i--) {
-    var m = Math.floor(n / 256);
-    bytes[i] = 0 | (n - m * 256);
-    n = m;
-  }
-  var resultValue = new LongValue(bytes);
-  if (sign < 0) {
-    resultValue = resultValue.neg();
-  }
-  return resultValue;
-};
-LongValue.Zero = new LongValue([0,0,0,0,0,0,0,0]);
-LongValue.One = new LongValue([0,0,0,0,0,0,0,1]);
-LongValue.MinusOne = new LongValue([255,255,255,255,255,255,255,255]);
+function loadClassFromFile(classUrl) {
+  var request = new XMLHttpRequest();
+  request.open('GET', classUrl, false);
+  request.overrideMimeType('text/plain; charset=x-user-defined');
+  request.send();
 
+  var data = [];
+  var s = request.responseText;
+  for (var j = 0, l = s.length; j < l; ++j) {
+    data.push(s.charCodeAt(j) & 0xFF);
+  }
+  return data;
+}
 
