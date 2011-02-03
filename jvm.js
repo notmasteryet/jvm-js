@@ -1,3 +1,5 @@
+var runtime;
+
 function JVMjs(method, constant_pool, obj, args) {
   function getValueCategory(value) {
     return value.type === "D" || value.type === "J" ? 2 : 1;
@@ -17,7 +19,12 @@ function JVMjs(method, constant_pool, obj, args) {
     return getArgumentsFromDescriptor(descriptor).length;
   }
 
+  function hasReturnValueFromDescriptor(descriptor) {
+    return descriptor.indexOf(")V") < 0;
+  }
+
   var methodCode = method.find_attribute("Code");
+  var exceptionTable = methodCode.exception_table;
   var isStatic = "ACC_STATIC" in method.access_flags;
   var argumentDescriptions = getArgumentsFromDescriptor(method.descriptor);
 
@@ -31,65 +38,62 @@ function JVMjs(method, constant_pool, obj, args) {
     locals.push(args[i]);
   }
 
-  var cp = 0, lastCp;
-  var state = null;
+  var pc = 0, lastKnownPc;
   var wideFound = false;
 
   this.execute = function() {
     var limit = 300;
-    while(this.step() && limit-- > 0);
-    this.stopState = state;
-    log(uneval(state));
-  };
-
-  this.executeAll = function() {
-    do {
-      this.execute();
-
-      if (state.name === "getstatic") {
-        var field = state.field;
-        if (field.class_.name === "java/lang/System" && field.name_and_type.name === "out") {
-          log("System.out");
-          state.result = { println : function(s) { log(s); } };
-        }
-      } else if (state.name === "invokevirtual") {
-        var method = state.method;
-        if (method.class_.name === "java/io/PrintStream") {
-          log("println");
-          state.result = state.object[method.name_and_type.name].apply(state.object, state.args);
-        }
-      }
-    } while(state.name !== "return");
-    return state.return_value;
+    while (this.step()) {
+      if (--limit < 0) { throw "too many steps"; }
+    }
+    return stack.pop();
   };
 
   this.step = function() {
     function validateArrayref(arrayref) {
       if (arrayref === null) {
-        raiseException("Ljava/lang/NullPointerException;");
+        raiseException("java/lang/NullPointerException");
       }
     }
 
     function validateArrayrefAndIndex(arrayref, index) {
       validateArrayref(arrayref);
       if (!(index.value >= 0 && index.value < arrayref.length)) {
-        raiseException("Ljava/lang/ArrayIndexOutOfBoundsException;");
+        raiseException("java/lang/ArrayIndexOutOfBoundsException");
       }
     }
 
     function raiseException(typeName) {
-      state = { name: "newexception", class_name: typeName };
-      throw "Exception raised: " + typeName;
+      var ex = runtime.newexception(typeName);
+      processThrow(ex);
     }
 
     function processThrow(objectref) {
       // check table
-      state = { name: "throw", object: objectref, code_pointer: lastCp };
+      var handler;
+      for (var i = 0, l = exceptionTable.length; i < l; ++i) {
+        if (exceptionTable[i].start_pc <= lastKnownPc && lastKnownPc < exceptionTable[i].end_pc) {
+          if (!exceptionTable[i].catch_type && instanceOf(objectref, exceptionTable[i].catch_type)) {
+            handler = exceptionTable[i];
+            break;
+          }
+        }
+      }
+      if (handler) {
+        stack.push(objectref);
+        pc = exceptionTable[i].handler_pc;
+      } else {
+        if ("stackTrace" in objectref) {
+          objectref.stackTrace = [];
+        }
+        objectref.stackTrace.push({method: method, pc: lastKnownPc});
+        throw new JVMjsException("Exception", objectref);
+      }
     }
 
     function validateNonNull(objectref) {
       if (objectref === null) {
-        raiseException("Ljava/lang/NullPointerException;");
+        raiseException("java/lang/NullPointerException");
       }
     }
 
@@ -148,41 +152,21 @@ function JVMjs(method, constant_pool, obj, args) {
     }
 
     function checkCast(objectref, type) {
+      if (!runtime.instanceof_(objectref, type)) {
+        raiseException("java/lang/ClassCastException");
+      }
     }
 
     function instanceOf(objectref, type) {
-      return 1;
+      return runtime.instanceof_(objectref, type) ? 1 : 0;
     }
 
-    if (state !== null) {
-      if ("exception" in state) {
-        var objectref = state.exception;
-        stack.push(objectref);
-        processThrow(objectref);
-        return state === null;
-      }
-      switch (state.name) {
-      case "getstatic":
-      case "getfield":
-        stack.push(state.result);
-        break;
-      case "invokevirtual":
-        // void ???
-      case "setstatic":
-      case "setfield":
-        break;
-      default:
-        log("Unexpected return: " + state.name);
-      }
-      state = null;
-    }
-
-    lastCp = cp;
+    lastKnownPc = pc;
 
     try {
-      var op = bytecode[cp++];
+      var op = bytecode[pc++];
       var jumpToAddress = null;
-      log("OP="+ op + ";CP=" + (cp-1));
+      log("OP="+ op + ";CP=" + (pc-1));
 
 switch (op) {
 case 0: // (0x00) nop
@@ -217,16 +201,16 @@ case 15: // (0x0f) dconst_1
   stack.push({value: n, type: "D"});
   break;
 case 16: // (0x10) bipush
-  var n = bytecode[cp++];
+  var n = bytecode[pc++];
   stack.push({value: n > 0x80 ? n - 0x100 : n, type: "I"});
   break;
 case 17: // (0x11) sipush
-  var n = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var n = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   stack.push({value: n > 0x8000 ? n - 0x10000 : n, type: "I"});
   break;
 case 18: // (0x12) ldc
-  var index = bytecode[cp++];
+  var index = bytecode[pc++];
   var const_ = constant_pool[index];
   if ("value_type" in const_) {
     stack.push({value: const_.value, type: const_.value_type});
@@ -236,8 +220,8 @@ case 18: // (0x12) ldc
   break;
 case 19: // (0x13) ldc_w
 case 20: // (0x14) ldc2_w
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var const_ = constant_pool[index];
   if ("value_type" in const_) {
     stack.push({value: const_.value, type: const_.value_type});
@@ -253,10 +237,10 @@ case 25: // (0x19) aload
   var index;
   if (wideFound) {
     wideFound = false;
-    index = (bytecode[cp] << 8) | bytecode[cp + 1];
-    cp += 2;
+    index = (bytecode[pc] << 8) | bytecode[pc + 1];
+    pc += 2;
   } else {
-    index = bytecode[cp++];
+    index = bytecode[pc++];
   }
   stack.push(locals[index]);
   break;
@@ -309,10 +293,10 @@ case 58: // (0x3a) astore
   var index;
   if (wideFound) {
     wideFound = false;
-    index = (bytecode[cp] << 8) | bytecode[cp + 1];
-    cp += 2;
+    index = (bytecode[pc] << 8) | bytecode[pc + 1];
+    pc += 2;
   } else {
-    index = bytecode[cp++];
+    index = bytecode[pc++];
   }
   locals[index] = convertForStore(stack.pop(), locals[index]);
   break;
@@ -541,14 +525,14 @@ case 107: // (0x6b) dmul
 case 108: // (0x6c) idiv
   var value2 = stack.pop();
   var value1 = stack.pop();
-  if (value2.value === 0) raiseException("Ljava/lang/ArithmeticException;");
+  if (value2.value === 0) raiseException("java/lang/ArithmeticException");
   var resultValue = (value1.value / value2.value) | 0;
   stack.push({value: resultValue, type: "I"});
   break;  
 case 109: // (0x6d) ldiv
   var value2 = stack.pop();
   var value1 = stack.pop();
-  if (value2.value.cmp(LongValue.Zero) === 0) raiseException("Ljava/lang/ArithmeticException;");
+  if (value2.value.cmp(LongValue.Zero) === 0) raiseException("java/lang/ArithmeticException");
   var resultValue = value1.value.div(value2.value);
   stack.push({value: resultValue, type: "J"});
   break;  
@@ -567,14 +551,14 @@ case 111: // (0x6f) ddiv
 case 112: // (0x70) irem
   var value2 = stack.pop();
   var value1 = stack.pop();
-  if (value2.value === 0) raiseException("Ljava/lang/ArithmeticException;");
+  if (value2.value === 0) raiseException("java/lang/ArithmeticException");
   var resultValue = value1.value - ((value1.value / value2.value) | 0) * value2.value;
   stack.push({value: resultValue, type: "I"});
   break;  
 case 113: // (0x71) lrem
   var value2 = stack.pop();
   var value1 = stack.pop();
-  if (value2.value.cmp(LongValue.Zero) === 0) raiseException("Ljava/lang/ArithmeticException;");
+  if (value2.value.cmp(LongValue.Zero) === 0) raiseException("java/lang/ArithmeticException");
   var resultValue = value1.value.rem(value2.value);
   stack.push({value: resultValue, type: "J"});
   break;  
@@ -694,12 +678,12 @@ case 132: // (0x84) iinc
   var index, const_;
   if (wideFound) {
     wideFound = false;
-    index = (bytecode[cp] << 8) | bytecode[cp + 1];
-    const_ = (bytecode[cp + 2] << 8) | bytecode[cp + 3];
-    cp += 4;
+    index = (bytecode[pc] << 8) | bytecode[pc + 1];
+    const_ = (bytecode[pc + 2] << 8) | bytecode[pc + 3];
+    pc += 4;
     if (const_ >= 0x8000) { const_ -= 0x10000; }
   } else {
-    index = bytecode[cp++];
+    index = bytecode[pc++];
     const_ = bytecode[op++];
     if (const_ >= 0x80) { const_ -= 0x100; }
   }
@@ -787,8 +771,8 @@ case 156: // (0x9c) ifge
 case 157: // (0x9d) ifgt
 case 158: // (0x9e) ifle
   var value = stack.pop();
-  var branch = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var branch = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   if (
     (op === 153 && value.value == 0) ||
     (op === 154 && value.value != 0) ||
@@ -797,9 +781,9 @@ case 158: // (0x9e) ifle
     (op === 157 && value.value > 0) ||
     (op === 158 && value.value >= 0)) {
     if (branch >= 0x8000) {
-      jumpToAddress = cp + branch - 0x10003;
+      jumpToAddress = pc + branch - 0x10003;
     } else {
-      jumpToAddress = cp + branch - 3;
+      jumpToAddress = pc + branch - 3;
     }
   }
   break;
@@ -811,8 +795,8 @@ case 163: // (0xa3) if_icmpgt
 case 164: // (0xa4) if_icmple
   var value2 = stack.pop();
   var value1 = stack.pop();
-  var branch = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var branch = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   if (
     (op === 159 && value1.value == value2.value) ||
     (op === 160 && value1.value != value2.value) ||
@@ -821,9 +805,9 @@ case 164: // (0xa4) if_icmple
     (op === 163 && value1.value > value2.value) ||
     (op === 164 && value1.value >= value2.value)) {
     if (branch >= 0x8000) {
-      jumpToAddress = cp + branch - 0x10003;
+      jumpToAddress = pc + branch - 0x10003;
     } else {
-      jumpToAddress = cp + branch - 3;
+      jumpToAddress = pc + branch - 3;
     }
   }
   break;
@@ -831,35 +815,35 @@ case 165: // (0xa5) if_acmpeq
 case 166: // (0xa6) if_acmpne
   var value2 = stack.pop();
   var value1 = stack.pop();
-  var branch = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var branch = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   if (
     (op === 165 && value1 === value2) ||
     (op === 166 && value1 !== value2)) {
     if (branch >= 0x8000) {
-      jumpToAddress = cp + branch - 0x10003;
+      jumpToAddress = pc + branch - 0x10003;
     } else {
-      jumpToAddress = cp + branch - 3;
+      jumpToAddress = pc + branch - 3;
     }
   }
   break;
 case 167: // (0xa7) goto
-  var branch = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var branch = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   if (branch >= 0x8000) {
-    jumpToAddress = cp + branch - 0x10003;
+    jumpToAddress = pc + branch - 0x10003;
   } else {
-    jumpToAddress = cp + branch - 3;
+    jumpToAddress = pc + branch - 3;
   }
   break;
 case 168: // (0xa8) jsr
-  var branch = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var branch = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var returnAddress;
   if (branch >= 0x8000) {
-    returnAddress = cp + branch - 0x10003;
+    returnAddress = pc + branch - 0x10003;
   } else {
-    returnAddress = cp + branch - 3;
+    returnAddress = pc + branch - 3;
   }
   stack.push({returnAddress: returnAddress});
   break;
@@ -867,43 +851,43 @@ case 169: // (0xa9) ret
   var index;
   if (wideFound) {
     wideFound = false;
-    index = (bytecode[cp] << 8) | bytecode[cp + 1];
-    cp += 2;
+    index = (bytecode[pc] << 8) | bytecode[pc + 1];
+    pc += 2;
   } else {
-    index = bytecode[cp++];
+    index = bytecode[pc++];
   }
   jumpToAddress = locals[index].returnAddress;
   break;
 case 170: // (0xaa) tableswitch
-  var padding = cp % 4, tableswitchAddress = cp - 1;
-  cp += padding;
+  var padding = pc % 4, tableswitchAddress = pc - 1;
+  pc += padding;
   var index = stack.pop();
-  var defaultOffset = (bytecode[cp] << 24) | (bytecode[cp + 1] << 16) | (bytecode[cp + 2] << 8) | bytecode[cp + 3];
-  var lowValue = (bytecode[cp + 4] << 24) | (bytecode[cp + 5] << 16) | (bytecode[cp + 6] << 8) | bytecode[cp + 7];
-  var highValue = (bytecode[cp + 8] << 24) | (bytecode[cp + 9] << 16) | (bytecode[cp + 10] << 8) | bytecode[cp + 11];
+  var defaultOffset = (bytecode[pc] << 24) | (bytecode[pc + 1] << 16) | (bytecode[pc + 2] << 8) | bytecode[pc + 3];
+  var lowValue = (bytecode[pc + 4] << 24) | (bytecode[pc + 5] << 16) | (bytecode[pc + 6] << 8) | bytecode[pc + 7];
+  var highValue = (bytecode[pc + 8] << 24) | (bytecode[pc + 9] << 16) | (bytecode[pc + 10] << 8) | bytecode[pc + 11];
   if (index.value < lowValue || index.value > highValue) {
     jumpToAddress = tableswitchAddress + defaultOffset;
   } else {
-    var i = (index.value - lowValue) << 2 + cp + 12;
+    var i = (index.value - lowValue) << 2 + pc + 12;
     var offset = (bytecode[i] << 24) | (bytecode[i + 1] << 16) | (bytecode[i + 2] << 8) | bytecode[i + 3];
     jumpToAddress = tableswitchAddress + offset;    
   }
   break;
 case 171: // (0xab) lookupswitch
-  var padding = cp % 4, lookupswitchAddress = cp - 1;
-  cp += padding;
+  var padding = pc % 4, lookupswitchAddress = pc - 1;
+  pc += padding;
   var key = stack.pop();
-  var defaultOffset = (bytecode[cp] << 24) | (bytecode[cp + 1] << 16) | (bytecode[cp + 2] << 8) | bytecode[cp + 3];
-  var npairs = (bytecode[cp + 4] << 24) | (bytecode[cp + 5] << 16) | (bytecode[cp + 6] << 8) | bytecode[cp + 7];
-  cp += 8;
+  var defaultOffset = (bytecode[pc] << 24) | (bytecode[pc + 1] << 16) | (bytecode[pc + 2] << 8) | bytecode[pc + 3];
+  var npairs = (bytecode[pc + 4] << 24) | (bytecode[pc + 5] << 16) | (bytecode[pc + 6] << 8) | bytecode[pc + 7];
+  pc += 8;
   var offset = defaultOffset;
   for (var i = 0; i < npairs; ++i) {    
-    var pairKey = (bytecode[cp] << 24) | (bytecode[cp + 1] << 16) | (bytecode[cp + 2] << 8) | bytecode[cp + 3];
+    var pairKey = (bytecode[pc] << 24) | (bytecode[pc + 1] << 16) | (bytecode[pc + 2] << 8) | bytecode[pc + 3];
     if (pairKey == key.value) {
-      offset = (bytecode[cp + 4] << 24) | (bytecode[cp + 5] << 16) | (bytecode[cp + 6] << 8) | bytecode[cp + 7];
+      offset = (bytecode[pc + 4] << 24) | (bytecode[pc + 5] << 16) | (bytecode[pc + 6] << 8) | bytecode[pc + 7];
       break;
     }
-    cp += 8;
+    pc += 8;
   }
   jumpToAddress = tableswitchAddress + offset;
   break;
@@ -912,93 +896,104 @@ case 173: // (0xad) lreturn
 case 174: // (0xae) freturn
 case 175: // (0xaf) dreturn
 case 176: // (0xb0) areturn
-  var value = stack.pop();
-  state = { name: "return", return_value: value };
-  break;
 case 177: // (0xb1) return
-  state = { name: "return" };
-  break;
+  return false;
 case 178: // (0xb2) getstatic
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
-  state = { name: "getstatic", field: constant_pool[index] };
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
+  resultValue = runtime.getstatic(constant_pool[index]);
+  stack.push(resultValue);
   break;
 case 179: // (0xb3) putstatic
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var value = stack.pop();
-  state = { name: "putstatic", field: constant_pool[index], value: value };
+  runtime.putstatic(constant_pool[index], value);
   break;
 case 180: // (0xb4) getfield
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var objectref = stack.pop();
   validateNonNull(objectref);
-  state = { name: "getfield", object: objectref, field: constant_pool[index] };
+  var resultValue = runtime.getfield(objectref, constant_pool[index]);
+  stack.push(resultValue);
   break;
 case 181: // (0xb5) putfield
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var value = stack.pop();
   var objectref = stack.pop();
   validateNonNull(objectref);
-  state = { name: "putfield", object: objectref, field: constant_pool[index], value: value };
+  runtime.putfield(objectref, constant_pool[index], value);
   break;
 case 182: // (0xb6) invokevirtual
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var args = [], args_count = getArgumentsCountFromDescriptor(constant_pool[index].name_and_type.descriptor);
   for (var i = 0; i < args_count; ++i) {
     args.unshift(stack.pop());
   }
   var objectref = stack.pop();
   validateNonNull(objectref);
-  state = { name: "invokevirtual", object: objectref, method: constant_pool[index], args: args };
+  var resultValue = runtime.invokevirtual(objectref, constant_pool[index], args);
+  if (hasReturnValueFromDescriptor(constant_pool[index].name_and_type.descriptor)) {
+    stack.push(resultValue);
+  }
   break;
 case 183: // (0xb7) invokespecial
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var args = [], args_count = getArgumentsCountFromDescriptor(constant_pool[index].name_and_type.descriptor);
   for (var i = 0; i < args_count; ++i) {
     args.unshift(stack.pop());
   }
   var objectref = stack.pop();
   validateNonNull(objectref);
-  state = { name: "invokespecial", object: objectref, method: constant_pool[index], args: args };
+  var resultValue = runtime.invokespecial(objectref, constant_pool[index], args);
+  if (hasReturnValueFromDescriptor(constant_pool[index].name_and_type.descriptor)) {
+    stack.push(resultValue);
+  }
   break;
 case 184: // (0xb8) invokestatic
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var args = [], args_count = getArgumentsCountFromDescriptor(constant_pool[index].name_and_type.descriptor);
   for (var i = 0; i < args_count; ++i) {
     args.unshift(stack.pop());
   }
-  state = { name: "invokestatic", method: constant_pool[index], args: args };
+  var resultValue = runtime.invokestatic(objectref, constant_pool[index], args);
+  if (hasReturnValueFromDescriptor(constant_pool[index].name_and_type.descriptor)) {
+    stack.push(resultValue);
+  }
   break;
 case 185: // (0xb9) invokeinterface
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 4;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 4;
   var args = [], args_count = getArgumentsCountFromDescriptor(constant_pool[index].name_and_type.descriptor);
   for (var i = 0; i < args_count; ++i) {
     args.unshift(stack.pop());
   }
   var objectref = stack.pop();
   validateNonNull(objectref);
-  state = { name: "invokeinterface", object: objectref, method: constant_pool[index], args: args };
+  var resultValue = runtime.invokeinterface(objectref, constant_pool[index], args);
+  if (hasReturnValueFromDescriptor(constant_pool[index].name_and_type.descriptor)) {
+    stack.push(resultValue);
+  }
   break;
 case 187: // (0xbb) new
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
-  state = { name: "new", class_: constant_pool[index] };
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
+  var resultValue = runtime.new_(constant_pool[index]);
+  stack.push(resultValue);
   break;
 case 188: // (0xbc) newarray
-  var atype = bytecode[cp++];
+  var atype = bytecode[pc++];
   var count = stack.pop();
   stack.push(createArray(count, atype));
   break;
 case 189: // (0xbd) anewarray
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var count = stack.pop();
   stack.push(createAArray([count], constant_pool[index]));
   break;
@@ -1010,19 +1005,18 @@ case 190: // (0xbe) arraylength
 case 191: // (0xbf) athrow
   var objectref = stack.pop();
   validateNotNull(objectref);
-  stack.push(objectref);
   processThrow(objectref);
   break;
 case 192: // (0xc0) checkcast
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var objectref = stack.pop();
   checkCast(objectref, constant_pool[index]);
   stack.push(objectref);
   break;
 case 193: // (0xc1) instanceof
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   var objectref = stack.pop();
   var resultValue = instanceOf(objectref, constant_pool[index]);
   stack.push({value: resultValue, type: "I"});
@@ -1041,9 +1035,9 @@ case 196: // (0xc4) wide
   wideFound = true;
   break;
 case 197: // (0xc5) multianewarray
-  var index = (bytecode[cp] << 8) | bytecode[cp + 1];
-  var dimensions = bytecode[cp + 3];
-  cp += 3;
+  var index = (bytecode[pc] << 8) | bytecode[pc + 1];
+  var dimensions = bytecode[pc + 3];
+  pc += 3;
   var counts = [];
   for (var i = 0; i < dimensions; ++i) {
     counts.unshift(stack.pop());
@@ -1053,23 +1047,23 @@ case 197: // (0xc5) multianewarray
 case 198: // (0xc6) ifnull
 case 199: // (0xc7) ifnonnull
   var value = stack.pop();
-  var branch = (bytecode[cp] << 8) | bytecode[cp + 1];
-  cp += 2;
+  var branch = (bytecode[pc] << 8) | bytecode[pc + 1];
+  pc += 2;
   if ( (op === 198) === (value == null) ) {
     if (branch >= 0x8000) {
-      jumpToAddress = cp + branch - 0x10003;
+      jumpToAddress = pc + branch - 0x10003;
     } else {
-      jumpToAddress = cp + branch - 3;
+      jumpToAddress = pc + branch - 3;
     }
   }
   break;
 case 200: // (0xc8) goto_w
-  var branch = (bytecode[cp] << 24) | (bytecode[cp + 1] << 16) | (bytecode[cp + 2] << 8) | bytecode[cp + 3];
-  jumpToAddress = cp - 3 + branch;
+  var branch = (bytecode[pc] << 24) | (bytecode[pc + 1] << 16) | (bytecode[pc + 2] << 8) | bytecode[pc + 3];
+  jumpToAddress = pc - 3 + branch;
   break;
 case 201: // (0xc9) jsr_w
-  var branch = (bytecode[cp] << 24) | (bytecode[cp + 1] << 16) | (bytecode[cp + 2] << 8) | bytecode[cp + 3];
-  var returnAddress = cp - 3 + branch;
+  var branch = (bytecode[pc] << 24) | (bytecode[pc + 1] << 16) | (bytecode[pc + 2] << 8) | bytecode[pc + 3];
+  var returnAddress = pc - 3 + branch;
   stack.push({returnAddress: returnAddress});
   break;
 
@@ -1078,20 +1072,22 @@ case 202: // (0xca) breakpoint
 case 254: // (0xfe) impdep1
 case 255: // (0xff) impdep2
 default:
-  state = {name:"error", message: "invalid operation " + op + " @" + cp };
-  break;
+  throw new JVMjsException("invalid operation " + op + " @" + pc);
 }
+
       if (jumpToAddress !== null) {
-        cp = jumpToAddress;
+        pc = jumpToAddress;
       }
-    } catch(e) {
-      log(e);
-      if (state === null) {
-        state = {name:"error", message: "Unexpected exception: " + e};
+    } catch(ex) {
+      log(ex.toString());
+      if ("nativeException" in ex) {
+        processThrow(ex.nativeException);
+      } else {
+        throw ex;
       }
     }
 
-    return state === null;
+    return true;
   };
 }
 
@@ -1105,7 +1101,7 @@ function createFactory(classFile) {
       (function(method) {
         obj[method.name] = function() {
           var vm = new JVMjs(method, classFile.constant_pool, obj, arguments);
-          return vm.executeAll();
+          return vm.execute();
         };
       })(classFile.methods[i]);
     }
@@ -1117,10 +1113,58 @@ function createFactory(classFile) {
     (function(method) {
       statics[method.name] = function() {
         var vm = new JVMjs(method, classFile.constant_pool, null, arguments);
-        return vm.executeAll();
+        return vm.execute();
       };
     })(classFile.methods[i]);
   }
   return { create: create, statics: statics };
 }
 
+function JVMjsException(message, nativeException) {
+  this.message = message;
+  this.nativeException = nativeException;
+}
+
+runtime = {
+  getstatic: function(field) {
+    if (field.class_.name === "java/lang/System" && field.name_and_type.name === "out") {
+      log("System.out");
+      return { println : function(s) { log(s); } };
+    }
+    throw "not implemented";
+  },
+  putstatic: function(field, value) {
+    throw "not implemented";
+  },
+  getfield: function(object, field) {
+    throw "not implemented";
+  },
+  putfield: function(object, field, value) {
+    throw "not implemented";
+  },
+  instanceof_: function(object, class_) {
+    return true;
+  },
+  invokestatic: function(method, args) {
+    throw "not implemented";
+  },
+  invokespecial: function(object, method, args) {
+    throw "not implemented";
+  },
+  invokevirtual: function(object, method, args) {
+    if (method.class_.name === "java/io/PrintStream") {
+      log("println");
+      return object[method.name_and_type.name].apply(object, args);
+    }
+    throw "not implemented";
+  },
+  invokeinterface: function(object, method, args) {
+    throw "not implemented";
+  },
+  new_: function(class_) {
+    throw "not implemented";
+  },
+  newexception: function(typeName) {
+    throw "not implemented";
+  }
+};
