@@ -3,23 +3,15 @@
 <script type="text/javascript" src="longvalue.js"></script>
 <script type="text/javascript" src="jvm-loader.js"></script>
 <script type="text/javascript" src="jvm.js"></script>
+<script type="text/javascript" src="jvm-lib.js"></script>
 </head>
 <body>
 <script type="text/javascript">
 var log = function(s) { document.getElementById("log").innerHTML += s.replace(/\</g, "&lt;") + "<br>"; };
 
-function loaded(classFile) {
-  var factory = createFactory(classFile);
-//  var obj = factory.create();
-//  obj.main([]);
-  factory.statics.main([]);
-  log(uneval(classFile));
-}
-
 function test() {
-  var data = loadClassFromFile("sandbox/hello/Hello.class");
-  var c = parseJavaClass(data);
-  loaded(c);
+  var factory = getFactory("sandbox/bottles/Bottles");
+  factory.statics.main([]);
 }
 
 addEventListener("DOMContentLoaded", test, false);

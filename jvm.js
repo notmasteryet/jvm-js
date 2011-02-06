@@ -1,6 +1,6 @@
 var runtime;
 
-function JVMjs(method, constant_pool, obj, args) {
+function MethodProxy(method, constant_pool, obj, args) {
   function getValueCategory(value) {
     return value.type === "D" || value.type === "J" ? 2 : 1;
   }
@@ -26,7 +26,7 @@ function JVMjs(method, constant_pool, obj, args) {
   var methodCode = method.find_attribute("Code");
   var exceptionTable = methodCode.exception_table;
   var isStatic = "ACC_STATIC" in method.access_flags;
-  var argumentDescriptions = getArgumentsFromDescriptor(method.descriptor);
+  var argumentDescriptors = getArgumentsFromDescriptor(method.descriptor);
 
   var bytecode = methodCode.code;
   var stack = [];
@@ -34,15 +34,18 @@ function JVMjs(method, constant_pool, obj, args) {
   if (!isStatic) {
     locals.push(obj);
   }
-  for (var i = 0; i < argumentDescriptions.length; i++) {
+  for (var i = 0; i < argumentDescriptors.length; i++) {    
     locals.push(args[i]);
+    if (getValueCategory(argumentDescriptors[i]) === 2) {
+      locals.push(args[i]);
+    }
   }
 
   var pc = 0, lastKnownPc;
   var wideFound = false;
 
   this.execute = function() {
-    var limit = 300;
+    var limit = 30000;
     while (this.step()) {
       if (--limit < 0) { throw "too many steps"; }
     }
@@ -87,7 +90,7 @@ function JVMjs(method, constant_pool, obj, args) {
           objectref.stackTrace = [];
         }
         objectref.stackTrace.push({method: method, pc: lastKnownPc});
-        throw new JVMjsException("Exception", objectref);
+        throw new MethodExecutionException("Exception", objectref);
       }
     }
 
@@ -98,7 +101,8 @@ function JVMjs(method, constant_pool, obj, args) {
     }
 
     function convertForStore(value, oldValue) {
-      if (!oldValue || !value || !("type" in value) || !("value" in value)) { 
+      if (typeof value !== "object" || typeof oldValue !== "object" || 
+        !("type" in value) || !("value" in value)) { 
         return value;
       }
       if (value.type === oldValue.type) {
@@ -166,7 +170,7 @@ function JVMjs(method, constant_pool, obj, args) {
     try {
       var op = bytecode[pc++];
       var jumpToAddress = null;
-      log("OP="+ op + ";CP=" + (pc-1));
+     // log("OP="+ op + "; CP=" + (pc-1) + "; STACK=" + uneval(stack) + "; LOCALS=" + uneval(locals));
 
 switch (op) {
 case 0: // (0x00) nop
@@ -684,7 +688,7 @@ case 132: // (0x84) iinc
     if (const_ >= 0x8000) { const_ -= 0x10000; }
   } else {
     index = bytecode[pc++];
-    const_ = bytecode[op++];
+    const_ = bytecode[pc++];
     if (const_ >= 0x80) { const_ -= 0x100; }
   }
   locals[index].value = (locals[index].value + const_) | 0;
@@ -777,9 +781,9 @@ case 158: // (0x9e) ifle
     (op === 153 && value.value == 0) ||
     (op === 154 && value.value != 0) ||
     (op === 155 && value.value < 0) ||
-    (op === 156 && value.value <= 0) ||
+    (op === 156 && value.value >= 0) ||
     (op === 157 && value.value > 0) ||
-    (op === 158 && value.value >= 0)) {
+    (op === 158 && value.value <= 0)) {
     if (branch >= 0x8000) {
       jumpToAddress = pc + branch - 0x10003;
     } else {
@@ -801,9 +805,9 @@ case 164: // (0xa4) if_icmple
     (op === 159 && value1.value == value2.value) ||
     (op === 160 && value1.value != value2.value) ||
     (op === 161 && value1.value < value2.value) ||
-    (op === 162 && value1.value <= value2.value) ||
+    (op === 162 && value1.value >= value2.value) ||
     (op === 163 && value1.value > value2.value) ||
-    (op === 164 && value1.value >= value2.value)) {
+    (op === 164 && value1.value <= value2.value)) {
     if (branch >= 0x8000) {
       jumpToAddress = pc + branch - 0x10003;
     } else {
@@ -961,7 +965,7 @@ case 184: // (0xb8) invokestatic
   for (var i = 0; i < args_count; ++i) {
     args.unshift(stack.pop());
   }
-  var resultValue = runtime.invokestatic(objectref, constant_pool[index], args);
+  var resultValue = runtime.invokestatic(constant_pool[index], args);
   if (hasReturnValueFromDescriptor(constant_pool[index].name_and_type.descriptor)) {
     stack.push(resultValue);
   }
@@ -1072,7 +1076,7 @@ case 202: // (0xca) breakpoint
 case 254: // (0xfe) impdep1
 case 255: // (0xff) impdep2
 default:
-  throw new JVMjsException("invalid operation " + op + " @" + pc);
+  throw "invalid operation " + op + " @" + pc;
 }
 
       if (jumpToAddress !== null) {
@@ -1080,10 +1084,13 @@ default:
       }
     } catch(ex) {
       log(ex.toString());
-      if ("nativeException" in ex) {
+      if (typeof ex === "object" && "nativeException" in ex) {
         processThrow(ex.nativeException);
       } else {
-        throw ex;
+        if (ex instanceof MethodExecutionException) {
+          throw ex;
+        }
+        throw new MethodExecutionException(ex.toString());
       }
     }
 
@@ -1091,80 +1098,150 @@ default:
   };
 }
 
-function createFactory(classFile) {
+var factories = {};
+
+function getFactory(className) {
+  if (className in factories) {
+    return factories[className];
+  }
+
+  try {
+    var resourceUrl = className.replace(/\./g, "/") + ".class";
+    var data = loadClassFromFile(resourceUrl);
+    var classFile = parseJavaClass(data);
+    log(uneval(classFile));
+    var factory = new ClassFactory(classFile);
+
+    factories[className] = factory;
+
+    factory.superFactory = getFactory(classFile.super_class.name);
+
+    if ("<clinit>" in factory.statics) {
+      factory.statics["<clinit>"]();
+    }
+
+  } catch (ex) {
+    throw "Unable to load '" + className + "' class: " + ex;
+  }
+
+  return factory;
+}
+
+function ClassFactory(classFile) {
+  this.$classFile = classFile;
+
+  var factory = this;
+
   function create() {
-    var obj = {};
+    var obj = new ClassProxy(factory);
     for (var i = 0, l = classFile.fields.length; i < l; ++i) {
       obj[classFile.fields[i].name] = 0;
     }
     for (var i = 0, l = classFile.methods.length; i < l; ++i) {
+      if (("ACC_STATIC" in classFile.methods[i].access_flags)) { continue; }
       (function(method) {
         obj[method.name] = function() {
-          var vm = new JVMjs(method, classFile.constant_pool, obj, arguments);
+          var vm = new MethodProxy(method, classFile.constant_pool, obj, arguments);
           return vm.execute();
         };
       })(classFile.methods[i]);
     }
     return obj;
   }  
+  
   var statics = {};
   for (var i = 0, l = classFile.methods.length; i < l; ++i) {
     if (!("ACC_STATIC" in classFile.methods[i].access_flags)) { continue; }
     (function(method) {
       statics[method.name] = function() {
-        var vm = new JVMjs(method, classFile.constant_pool, null, arguments);
+        var vm = new MethodProxy(method, classFile.constant_pool, null, arguments);
         return vm.execute();
       };
     })(classFile.methods[i]);
   }
-  return { create: create, statics: statics };
+
+  this.statics = statics;
+  this.create = create;
 }
 
-function JVMjsException(message, nativeException) {
+function ClassProxy(factory) {
+  this.$factory = factory;
+}
+
+function MethodExecutionException(message, nativeException) {
   this.message = message;
   this.nativeException = nativeException;
+}
+MethodExecutionException.prototype.toString = function() {
+  return this.message;
 }
 
 runtime = {
   getstatic: function(field) {
-    if (field.class_.name === "java/lang/System" && field.name_and_type.name === "out") {
-      log("System.out");
-      return { println : function(s) { log(s); } };
+    var factory = getFactory(field.class_.name);
+    if (!(field.name_and_type.name in factory.statics)) {
+      throw "Static field " + field.class_.name + ":" + field.name_and_type.name + " not found";
     }
-    throw "not implemented";
+    return factory.statics[field.name_and_type.name];
   },
   putstatic: function(field, value) {
-    throw "not implemented";
+    var factory = getFactory(field.class_.name);
+    factory.statics[field.name_and_type.name] = value;
   },
   getfield: function(object, field) {
-    throw "not implemented";
+    if (!(field.name_and_type.name in object)) {
+      throw "Field " + field.class_.name + ":" + field.name_and_type.name + " not found";
+    }
+    return object[field.name_and_type.name];
   },
   putfield: function(object, field, value) {
-    throw "not implemented";
+    object[field.name_and_type.name] = value;
   },
   instanceof_: function(object, class_) {
     return true;
   },
   invokestatic: function(method, args) {
-    throw "not implemented";
+    var factory = getFactory(method.class_.name);
+    if (!(method.name_and_type.name in factory.statics)) {
+      throw "Static method " + method.class_.name + ":" + method.name_and_type.name + " not found";
+    }
+    return factory.statics[method.name_and_type.name].apply(null, args);
   },
   invokespecial: function(object, method, args) {
-    throw "not implemented";
+    if (!(method.name_and_type.name in object)) {
+      throw "Special method " + method.class_.name + ":" + method.name_and_type.name + " not found";
+    }
+    var result = object[method.name_and_type.name].apply(object, args);
+    return result;
   },
   invokevirtual: function(object, method, args) {
-    if (method.class_.name === "java/io/PrintStream") {
-      log("println");
-      return object[method.name_and_type.name].apply(object, args);
+    if (!(method.name_and_type.name in object)) {
+      throw "Method " + method.class_.name + ":" + method.name_and_type.name + " not found";
     }
-    throw "not implemented";
+    return object[method.name_and_type.name].apply(object, args);
   },
   invokeinterface: function(object, method, args) {
-    throw "not implemented";
+    if (!(method.name_and_type.name in object)) {
+      throw "Interface method " + method.class_.name + ":" + method.name_and_type.name + " not found";
+    }
+    return object[method.name_and_type.name].apply(object, args);
   },
   new_: function(class_) {
-    throw "not implemented";
+    var factory = getFactory(class_.name);
+    var object = factory.create();
+    var sf, prev = object;
+    for (sf = factory.superFactory; sf; sf = sf.superFactory) {
+      prev.$super = sf.create();
+      prev.$self  = object;
+      prev = prev.$super;
+    }
+    prev.$self = object;
+    return object;
   },
   newexception: function(typeName) {
-    throw "not implemented";
+    var object = this.new_({class_: typeName});
+    this.invokespecial(object, {class_:typeName, name_and_type: {name: "<init>", description: "()V"}}, []);
+    return object;
   }
 };
+
