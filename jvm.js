@@ -45,14 +45,24 @@ function MethodProxy(method, constant_pool, obj, args) {
   var wideFound = false;
 
   this.execute = function() {
-    var limit = 30000;
-    while (this.step()) {
-      if (--limit < 0) { throw "too many steps"; }
+    try {
+      var limit = 30000;
+      while (this.step()) {
+        if (--limit < 0) { throw "too many steps"; }
+      }
+      return stack.pop();
+    } catch (ex) {
+      if (ex instanceof MethodExecutionException && ex.nativeException) {
+        throw ex.nativeException.$self;
+      } else {
+        throw ex;
+      }
     }
-    return stack.pop();
   };
 
   this.step = function() {
+    var raiseExceptionCookie = {};
+
     function validateArrayref(arrayref) {
       if (arrayref === null) {
         raiseException("java/lang/NullPointerException");
@@ -76,7 +86,7 @@ function MethodProxy(method, constant_pool, obj, args) {
       var handler;
       for (var i = 0, l = exceptionTable.length; i < l; ++i) {
         if (exceptionTable[i].start_pc <= lastKnownPc && lastKnownPc < exceptionTable[i].end_pc) {
-          if (!exceptionTable[i].catch_type && instanceOf(objectref, exceptionTable[i].catch_type)) {
+          if (!exceptionTable[i].catch_type || instanceOf(objectref, exceptionTable[i].catch_type)) {
             handler = exceptionTable[i];
             break;
           }
@@ -85,8 +95,9 @@ function MethodProxy(method, constant_pool, obj, args) {
       if (handler) {
         stack.push(objectref);
         pc = exceptionTable[i].handler_pc;
+        throw raiseExceptionCookie;
       } else {
-        if ("stackTrace" in objectref) {
+        if (!("stackTrace" in objectref)) {
           objectref.stackTrace = [];
         }
         objectref.stackTrace.push({method: method, pc: lastKnownPc});
@@ -1083,6 +1094,9 @@ default:
         pc = jumpToAddress;
       }
     } catch(ex) {
+      if (ex === raiseExceptionCookie) {
+        return true; // skip scheduled exception
+      }
       log(ex.toString());
       if (typeof ex === "object" && "nativeException" in ex) {
         processThrow(ex.nativeException);
@@ -1107,9 +1121,10 @@ function getFactory(className) {
 
   try {
     var resourceUrl = className.replace(/\./g, "/") + ".class";
+    log("Loading from " + resourceUrl + "\n");
+
     var data = loadClassFromFile(resourceUrl);
     var classFile = parseJavaClass(data);
-    log(uneval(classFile));
     var factory = new ClassFactory(classFile);
 
     factories[className] = factory;
@@ -1128,12 +1143,13 @@ function getFactory(className) {
 }
 
 function ClassFactory(classFile) {
-  this.$classFile = classFile;
+  this.classFile = classFile;
+  this.className = classFile.this_class.name;
 
   var factory = this;
 
   function create() {
-    var obj = new ClassProxy(factory);
+    var obj = {};
     for (var i = 0, l = classFile.fields.length; i < l; ++i) {
       obj[classFile.fields[i].name] = 0;
     }
@@ -1149,6 +1165,7 @@ function ClassFactory(classFile) {
     return obj;
   }  
   
+  // TODO intefaces static methods
   var statics = {};
   for (var i = 0, l = classFile.methods.length; i < l; ++i) {
     if (!("ACC_STATIC" in classFile.methods[i].access_flags)) { continue; }
@@ -1160,12 +1177,21 @@ function ClassFactory(classFile) {
     })(classFile.methods[i]);
   }
 
+  var methods = [], fields = [], interfaces = [];
+  for (var i = 0, l = classFile.methods.length; i < l; ++i) {
+    if (("ACC_STATIC" in classFile.methods[i].access_flags) || ("ACC_PRIVATE" in classFile.methods[i].access_flags)) { continue; }
+    methods.push(classFile.methods[i].name);
+  }    
+  for (var i = 0, l = classFile.fields.length; i < l; ++i) {
+    if (("ACC_STATIC" in classFile.fields[i].access_flags) || ("ACC_PRIVATE" in classFile.fields[i].access_flags)) { continue; }
+    fields.push(classFile.fields[i].name);
+  }    
+
   this.statics = statics;
   this.create = create;
-}
-
-function ClassProxy(factory) {
-  this.$factory = factory;
+  this.instanceMethods = methods;
+  this.instanceFields = fields;
+  this.interfaces = interfaces;
 }
 
 function MethodExecutionException(message, nativeException) {
@@ -1174,6 +1200,66 @@ function MethodExecutionException(message, nativeException) {
 }
 MethodExecutionException.prototype.toString = function() {
   return this.message;
+}
+
+function normalizeObject(object, className) {
+  if (typeof object === "object") {
+    if (!("$self" in object)) {
+      return object;
+    }
+    var self = object.$self;
+    while (self != null) {
+      if (self.$factory.className === className) {
+        return self;
+      }
+      self = self.$super;
+    }
+    return object;
+  }
+  if (typeof object === "string") {
+    object = new JavaString(object);
+    return className === "java/lang/Object" ? object.$super : object;
+  }
+  return object;
+}
+
+function buildVirtualTable(object) {
+  function proxyMethod(name) {
+    object[name] = function() {
+      return object.$super[name].apply(object.$super, arguments);
+    };
+  }
+
+  function proxyField(name) {
+    Object.defineProperty(object, name, {
+      get: function() {
+        return object.$super[name];
+      },
+      set: function(value) {
+        object.$super[name] = value;
+      }
+    });
+  }
+
+  var meta = { methods: [], fields: [] };
+  if (object.$super) { 
+    meta = buildVirtualTable(object.$super);
+    for (var i = 0, l = meta.methods.length; i < l; ++i) {
+      if (object.hasOwnProperty(meta.methods[i])) { continue; }
+      proxyMethod(meta.methods[i]);
+    }
+    for (var i = 0, l = meta.fields.length; i < l; ++i) {
+      if (object.hasOwnProperty(meta.fields[i])) { continue; }
+      proxyField(meta.fields[i]);
+    }
+  }  
+  if (object.$factory.instanceMethods) {
+    meta.methods = meta.methods.concat(object.$factory.instanceMethods);
+  }
+  if (object.$factory.instanceFields) {
+    meta.fields = meta.fields.concat(object.$factory.instanceFields);
+  }
+  return meta;
 }
 
 runtime = {
@@ -1189,16 +1275,22 @@ runtime = {
     factory.statics[field.name_and_type.name] = value;
   },
   getfield: function(object, field) {
+    var object = normalizeObject(object, field.class_.name);
     if (!(field.name_and_type.name in object)) {
       throw "Field " + field.class_.name + ":" + field.name_and_type.name + " not found";
     }
     return object[field.name_and_type.name];
   },
   putfield: function(object, field, value) {
+    var object = normalizeObject(object, field.class_.name);
     object[field.name_and_type.name] = value;
   },
   instanceof_: function(object, class_) {
-    return true;
+    if (object == null) {
+      return true;
+    }
+    var object = normalizeObject(object, class_.name);
+    return object.$factory.className === class_.name;
   },
   invokestatic: function(method, args) {
     var factory = getFactory(method.class_.name);
@@ -1215,6 +1307,7 @@ runtime = {
     return result;
   },
   invokevirtual: function(object, method, args) {
+    var object = normalizeObject(object, method.class_.name);
     if (!(method.name_and_type.name in object)) {
       throw "Method " + method.class_.name + ":" + method.name_and_type.name + " not found";
     }
@@ -1229,17 +1322,22 @@ runtime = {
   new_: function(class_) {
     var factory = getFactory(class_.name);
     var object = factory.create();
+    object.$factory = factory;
+    object.$self = object;
     var sf, prev = object;
     for (sf = factory.superFactory; sf; sf = sf.superFactory) {
-      prev.$super = sf.create();
-      prev.$self  = object;
-      prev = prev.$super;
+      var super_ = sf.create();
+      super_.$factory = sf;
+      prev.$super = super_;
+      super_.$upcast = prev;
+      super_.$self = object;
+      prev = super_;
     }
-    prev.$self = object;
+    buildVirtualTable(object);
     return object;
   },
   newexception: function(typeName) {
-    var object = this.new_({class_: typeName});
+    var object = this.new_({name: typeName});
     this.invokespecial(object, {class_:typeName, name_and_type: {name: "<init>", description: "()V"}}, []);
     return object;
   }

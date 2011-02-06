@@ -7,10 +7,10 @@
 </head>
 <body>
 <script type="text/javascript">
-var log = function(s) { document.getElementById("log").innerHTML += s.replace(/\</g, "&lt;") + "<br>"; };
+var log = function(s) { document.getElementById("log").innerHTML += s.replace(/\</g, "&lt;").replace(/\n/g, "<br>"); };
 
 function test() {
-  var factory = getFactory("sandbox/bottles/Bottles");
+  var factory = getFactory("sandbox/div/ZeroDivCatch");
   factory.statics.main([]);
 }
 
