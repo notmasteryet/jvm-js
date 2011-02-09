@@ -1,12 +1,16 @@
 var nextLockId = 0;
 
-factories["java/lang/Object"] = {
+function addFactory(description) {  
+  factories[description.className] = description;
+}
+
+addFactory({
   className: "java/lang/Object",
   create: function() {
     return new JavaObject();
   },
   instanceMethods: ["toString", "hashCode", "equals"]
-};
+});
 
 function JavaObject() {
   this.$lockId = nextLockId++ | 0;
@@ -22,7 +26,7 @@ var systemOut = {
   println : function(s) { log((s||"") + "\n"); } 
 };
 
-factories["java/lang/System"] = {
+addFactory({
   className: "java/lang/System",
   statics: {
     "out": systemOut,
@@ -31,10 +35,10 @@ factories["java/lang/System"] = {
       throw "Exit was called";
     }
   }
-};
+});
 
-factories["java/lang/StringBuilder"] = {
-  className: "java/lang/StringBuiler",
+addFactory({
+  className: "java/lang/StringBuilder",
   superFactory: factories["java/lang/Object"],
   create: function() {
     var buffer;
@@ -56,16 +60,16 @@ factories["java/lang/StringBuilder"] = {
     };
   },
   instanceMethods: ["toString", "append"]
-};
+});
 
-factories["java/lang/String"] = {
+addFactory({
   className: "java/lang/String",
   superFactory: factories["java/lang/Object"],
   create: function () {
     return new JavaString();
   },
   instanceMethods: ["toString", "hashCode", "equals"]  
-};
+});
 
 function JavaString(s) {
   if (typeof s === "string") {
@@ -83,7 +87,7 @@ JavaString.prototype.hashCode = function() { return this.s.length; };
 JavaString.prototype.equals = function(other) { return this.s == normalizeObject(other, "java/lang/String").s; };
 JavaString.prototype["<init>"] = function(s) { this.s = s; };
 
-factories["java/lang/Throwable"] = {
+addFactory({
   className: "java/lang/Throwable",
   superFactory: factories["java/lang/Object"],
   create: function () {
@@ -101,31 +105,31 @@ factories["java/lang/Throwable"] = {
     };
   },
   instanceMethods: ["getMessage", "getCause", "toString"]
-};
+});
 
-factories["java/lang/Exception"] = {
+addFactory({
   className: "java/lang/Exception",
   superFactory: factories["java/lang/Throwable"],
   create: function() {
     return { "<init>" : function(message, cause) { this.$super["<init>"](message, cause); } };
   },
   instanceMethods: []  
-};
+});
 
-factories["java/lang/RuntimeException"] = {
+addFactory({
   className: "java/lang/RuntimeException",
   superFactory: factories["java/lang/Exception"],
   create: function() {
     return { "<init>" : function(message, cause) { this.$super["<init>"](message, cause); } };
   },
   instanceMethods: []  
-};
+});
 
-factories["java/lang/ArithmeticException"] = {
+addFactory({
   className: "java/lang/ArithmeticException",
   superFactory: factories["java/lang/RuntimeException"],
   create: function() {
     return { "<init>" : function(message) { this.$super["<init>"](message); } };
   },
   instanceMethods: []  
-};
+});

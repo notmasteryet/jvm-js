@@ -1120,10 +1120,25 @@ function getFactory(className) {
   }
 
   try {
-    var resourceUrl = className.replace(/\./g, "/") + ".class";
-    log("Loading from " + resourceUrl + "\n");
+    var searchLocations = ["."];
+    if (getFactory.searchLocations) {
+      searchLocations = searchLocations.concat(getFactory.searchLocations);
+    }
+    var data;
+    for (var i = 0; i < searchLocations.length; ++i) {
+      try {
+        var resourceUrl = searchLocations[i] + "/" + className.replace(/\./g, "/") + ".class";
+        data = loadClassFromFile(resourceUrl);
+        log("Class " + className + " was found at " + resourceUrl + "\n");
+        break;
+      } catch(ex) {
+        // failed, trying again
+      }
+    }
+    if (!data) {
+      throw "Class " + className + " was not found";
+    }
 
-    var data = loadClassFromFile(resourceUrl);
     var classFile = parseJavaClass(data);
     var factory = new ClassFactory(classFile);
 
@@ -1207,6 +1222,9 @@ function normalizeObject(object, className) {
     if (!("$self" in object)) {
       return object;
     }
+    if (object.$factory.className === className) {
+      return object;
+    }
     var self = object.$self;
     while (self != null) {
       if (self.$factory.className === className) {
@@ -1275,21 +1293,21 @@ runtime = {
     factory.statics[field.name_and_type.name] = value;
   },
   getfield: function(object, field) {
-    var object = normalizeObject(object, field.class_.name);
+    object = normalizeObject(object, field.class_.name);
     if (!(field.name_and_type.name in object)) {
       throw "Field " + field.class_.name + ":" + field.name_and_type.name + " not found";
     }
     return object[field.name_and_type.name];
   },
   putfield: function(object, field, value) {
-    var object = normalizeObject(object, field.class_.name);
+    object = normalizeObject(object, field.class_.name);
     object[field.name_and_type.name] = value;
   },
   instanceof_: function(object, class_) {
     if (object == null) {
       return true;
     }
-    var object = normalizeObject(object, class_.name);
+    object = normalizeObject(object, class_.name);
     return object.$factory.className === class_.name;
   },
   invokestatic: function(method, args) {
@@ -1300,6 +1318,7 @@ runtime = {
     return factory.statics[method.name_and_type.name].apply(null, args);
   },
   invokespecial: function(object, method, args) {
+    object = normalizeObject(object, method.class_.name);
     if (!(method.name_and_type.name in object)) {
       throw "Special method " + method.class_.name + ":" + method.name_and_type.name + " not found";
     }
@@ -1307,13 +1326,14 @@ runtime = {
     return result;
   },
   invokevirtual: function(object, method, args) {
-    var object = normalizeObject(object, method.class_.name);
+    var object = "$self" in object ? object.$self : object;
     if (!(method.name_and_type.name in object)) {
       throw "Method " + method.class_.name + ":" + method.name_and_type.name + " not found";
     }
     return object[method.name_and_type.name].apply(object, args);
   },
   invokeinterface: function(object, method, args) {
+    var object = "$self" in object ? object.$self : object;
     if (!(method.name_and_type.name in object)) {
       throw "Interface method " + method.class_.name + ":" + method.name_and_type.name + " not found";
     }

@@ -387,12 +387,16 @@ function loadClassFromFileAsync(classUrl, callback) {
   var request = new XMLHttpRequest();
   request.onreadystatechange = function() {
     if(request.readyState == 4) {
-      var data = [];
-      var s = request.responseText;
-      for (var j = 0, l = s.length; j < l; ++j) {
-        data.push(s.charCodeAt(j) & 0xFF);
+      if (request.status == 200 || request.status == 0) {
+        var data = [];
+        var s = request.responseText;
+        for (var j = 0, l = s.length; j < l; ++j) {
+          data.push(s.charCodeAt(j) & 0xFF);
+        }
+        callback(data);
+      } else {
+        callback(null);
       }
-      callback(data);
     }
   };
   request.open('GET', classUrl, true);
@@ -405,6 +409,10 @@ function loadClassFromFile(classUrl) {
   request.open('GET', classUrl, false);
   request.overrideMimeType('text/plain; charset=x-user-defined');
   request.send();
+
+  if (request.status != 200 && request.status != 0) {
+    throw "File " + classUrl + " is not available: " + request.statusText;
+  }
 
   var data = [];
   var s = request.responseText;

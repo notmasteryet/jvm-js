@@ -6,15 +6,30 @@
 <script type="text/javascript" src="jvm-lib.js"></script>
 </head>
 <body>
+<div>
+  <select id="code">
+     <option>Hello</option>
+     <option>Bottles</option>
+     <option>ZeroDiv</option>
+     <option>ZeroDivCatch</option>
+     <option>Class1</option>
+  </select> <button id="run">Run</button>
+</div>
 <script type="text/javascript">
+getFactory.searchLocations = ["sandbox/simple"];
 var log = function(s) { document.getElementById("log").innerHTML += s.replace(/\</g, "&lt;").replace(/\n/g, "<br>"); };
 
-function test() {
-  var factory = getFactory("sandbox/div/ZeroDivCatch");
+function run() {
+  var codeElement = document.getElementById("code");
+  var className = codeElement.options[codeElement.selectedIndex].value;
+  document.getElementById("log").innerHTML = "";
+  
+  
+  var factory = getFactory(className);
   factory.statics.main([]);
 }
 
-addEventListener("DOMContentLoaded", test, false);
+document.getElementById("run").addEventListener("click", run, false);
 
 </script>
 <p id="log"></p>
