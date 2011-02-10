@@ -383,7 +383,7 @@ function parseJavaClass(classContent) {
   return classFile;
 }
 
-function loadClassFromFileAsync(classUrl, callback) {
+function loadFileAsync(classUrl, callback) {
   var request = new XMLHttpRequest();
   request.onreadystatechange = function() {
     if(request.readyState == 4) {
@@ -404,7 +404,7 @@ function loadClassFromFileAsync(classUrl, callback) {
   request.send();
 }
 
-function loadClassFromFile(classUrl) {
+function loadFile(classUrl) {
   var request = new XMLHttpRequest();
   request.open('GET', classUrl, false);
   request.overrideMimeType('text/plain; charset=x-user-defined');
@@ -422,3 +422,7 @@ function loadClassFromFile(classUrl) {
   return data;
 }
 
+function loadJarFile(url) {
+  var data = loadFile(url);
+  return readJarContent(data);
+}

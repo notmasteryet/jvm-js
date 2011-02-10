@@ -1122,13 +1122,21 @@ function getFactory(className) {
   try {
     var searchLocations = ["."];
     if (getFactory.searchLocations) {
-      searchLocations = searchLocations.concat(getFactory.searchLocations);
+      searchLocations = getFactory.searchLocations;
     }
-    var data;
+    var data, filePath = className.replace(/\./g, "/") + ".class";
     for (var i = 0; i < searchLocations.length; ++i) {
+      if (typeof searchLocations[i] === "object") {
+        if (!searchLocations[i].hasOwnProperty(filePath)) {
+          continue;
+        }
+        data = searchLocations[i][filePath];
+        break;
+      }
+
       try {
-        var resourceUrl = searchLocations[i] + "/" + className.replace(/\./g, "/") + ".class";
-        data = loadClassFromFile(resourceUrl);
+        var resourceUrl = searchLocations[i] + "/" + filePath;
+        data = loadFile(resourceUrl);
         log("Class " + className + " was found at " + resourceUrl + "\n");
         break;
       } catch(ex) {

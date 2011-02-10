@@ -4,6 +4,7 @@
 <script type="text/javascript" src="jvm-loader.js"></script>
 <script type="text/javascript" src="jvm.js"></script>
 <script type="text/javascript" src="jvm-lib.js"></script>
+<script type="text/javascript" src="jar-reader.js"></script>
 </head>
 <body>
 <div>
@@ -13,10 +14,15 @@
      <option>ZeroDiv</option>
      <option>ZeroDivCatch</option>
      <option>Class1</option>
+     <option>TestJar</option>
   </select> <button id="run">Run</button>
 </div>
 <script type="text/javascript">
-getFactory.searchLocations = ["sandbox/simple"];
+getFactory.searchLocations = [
+  "sandbox/simple", 
+  loadJarFile("sandbox/jar/testjar.jar")
+];
+
 var log = function(s) { document.getElementById("log").innerHTML += s.replace(/\</g, "&lt;").replace(/\n/g, "<br>"); };
 
 function run() {
@@ -30,7 +36,6 @@ function run() {
 }
 
 document.getElementById("run").addEventListener("click", run, false);
-
 </script>
 <p id="log"></p>
 </body></html>
