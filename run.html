@@ -15,12 +15,14 @@
      <option>ZeroDivCatch</option>
      <option>Class1</option>
      <option>TestJar</option>
+     <option>Gen1</option>
   </select> <button id="run">Run</button>
 </div>
 <script type="text/javascript">
 getFactory.searchLocations = [
   "sandbox/simple", 
-  loadJarFile("sandbox/jar/testjar.jar")
+  loadJarFile("sandbox/jar/testjar.jar"),
+  "sandbox/generics"
 ];
 
 var log = function(s) { document.getElementById("log").innerHTML += s.replace(/\</g, "&lt;").replace(/\n/g, "<br>"); };

@@ -202,7 +202,7 @@ function parseJavaClass(classContent) {
       break;
     case "c": 
       var class_info_index = reader.readU2();
-      element_value.value = constant_pool[const_value_index].value;
+      element_value.value = constant_pool[class_info_index].value;
       break;
     case "@":
       element_value.value = read_annotation(constant_pool);
@@ -342,13 +342,13 @@ function parseJavaClass(classContent) {
       info.local_variable_table = local_variable_table;
       break;
     case "EnclosingMethod":
-      var class_index = readU2();
+      var class_index = reader.readU2();
       info.class_ = constant_pool[class_index];
-      var method_index = readU2();
+      var method_index = reader.readU2();
       info.method = constant_pool[method_index];
       break;
     case "Signature":
-      var signature_index = readU2();
+      var signature_index = reader.readU2();
       info.signature = constant_pool[signature_index].value;
       break;
     case "LocalVariableTypeTable":
