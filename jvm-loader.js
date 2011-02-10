@@ -154,11 +154,16 @@ function parseJavaClass(classContent) {
     if ((access_flags & 0x0020) !== 0) { flags.ACC_SUPER = true; }
     if ((access_flags & 0x0020) !== 0) { flags.ACC_SYNCHRONIZED = true; }
     if ((access_flags & 0x0040) !== 0) { flags.ACC_VOLATILE = true; }
+    if ((access_flags & 0x0040) !== 0) { flags.ACC_BRIDGE = true; }
     if ((access_flags & 0x0080) !== 0) { flags.ACC_TRANSIENT = true; }
+    if ((access_flags & 0x0080) !== 0) { flags.ACC_VARARGS = true; }
     if ((access_flags & 0x0100) !== 0) { flags.ACC_NATIVE = true; }
     if ((access_flags & 0x0200) !== 0) { flags.ACC_INTERFACE = true; }
     if ((access_flags & 0x0400) !== 0) { flags.ACC_ABSTRACT = true; }
     if ((access_flags & 0x0800) !== 0) { flags.ACC_STRICT = true; }
+    if ((access_flags & 0x1000) !== 0) { flags.ACC_SYNTHETIC = true; }
+    if ((access_flags & 0x2000) !== 0) { flags.ACC_ANNOTATION = true; }
+    if ((access_flags & 0x4000) !== 0) { flags.ACC_ENUM = true; }
     return flags;
   }
 
@@ -169,6 +174,67 @@ function parseJavaClass(classContent) {
       }
     }
     return null;
+  }
+
+  function read_element_value(constant_pool) {
+    var element_value = {};
+    element_value.tag = reader.readU1();
+    switch (String.fromCharCode(element_value.tag)) {
+    case "B": 
+    case "C": 
+    case "D": 
+    case "F": 
+    case "I": 
+    case "J": 
+    case "S": 
+    case "Z": 
+    case "s": 
+      var const_value_index = reader.readU2();
+      element_value.value = constant_pool[const_value_index].value;
+      break;
+    case "e": 
+      var enum_const_value = {};
+      var type_name_index = reader.readU2();
+      element_const_value.type_name = constant_pool[type_name_index].value;
+      var const_name_index = reader.readU2();
+      element_const_value.const_name = constant_pool[const_name_index].value;
+      element_value.value = element_const_value;
+      break;
+    case "c": 
+      var class_info_index = reader.readU2();
+      element_value.value = constant_pool[const_value_index].value;
+      break;
+    case "@":
+      element_value.value = read_annotation(constant_pool);
+      break;
+    case "[": 
+      var num_values = reader.readU2();
+      var values = [];
+      for (var j = 0; j < num_values; ++j) {
+        values.push(read_element_value(constant_pool));
+      }
+      element_value.value = values;
+      break;
+    }
+    return element_value;
+  }
+
+  function read_annotation(constant_pool) {
+    var annotation = {};
+    var type_index = reader.readU2();
+    annotation.type = constant_pool[type_index].value;
+    var num_element_value_pairs = reader.readU2();
+    var element_value_pairs = [];
+    for (var q = 0; q < num_element_value_pairs; ++q) {
+      var element_value_pair = {};
+      var element_name_index = reader.readU2();
+      element_value_pair.element_name = constant_pool[element_name_index].value;
+      element_value_pair.value = read_element_value(constant_pool);
+
+      element_value_pairs.push(element_value_pair);
+    }
+    annotation.element_value_pairs = element_value_pairs;
+    return annotation;
   }
 
   function read_attribute_info(constant_pool) {
@@ -274,6 +340,58 @@ function parseJavaClass(classContent) {
         }
       }
       info.local_variable_table = local_variable_table;
+      break;
+    case "EnclosingMethod":
+      var class_index = readU2();
+      info.class_ = constant_pool[class_index];
+      var method_index = readU2();
+      info.method = constant_pool[method_index];
+      break;
+    case "Signature":
+      var signature_index = readU2();
+      info.signature = constant_pool[signature_index].value;
+      break;
+    case "LocalVariableTypeTable":
+      var local_variable_type_table_length = reader.readU2();
+      var local_variable_type_table = [];
+      for (var j = 0; j < local_variable_type_table_length; ++j) {
+        var local_variable_type = {};
+        local_variable_type.start_pc = reader.readU2();
+        local_variable_type.length_ = reader.readU2();
+        var name_index = reader.readU2();
+        local_variable_type.name = constant_pool[name_index].value;
+        var signature_index = reader.readU2();
+        local_variable_type.signature = constant_pool[signature_index].value;
+        local_variable_type.index = reader.readU2();
+
+        local_variable_type_table.push(local_variable_type);
+      }
+      info.local_variable_type_table = local_variable_type_table;
+      break;
+    case "RuntimeVisibleAnnotations":
+    case "RuntimeInvisibleAnnotations":
+      var num_annotations = reader.readU2();
+      var annotations = [];
+      for (var j = 0; j < num_annotations; ++j) {
+        annotations.push(read_annotation(constant_pool));
+      }
+      info.annotations = annotations;
+      break;
+    case "RuntimeVisibleParameterAnnotations":
+    case "RuntimeInvisibleParameterAnnotations":
+      var num_parameters = reader.readU1();
+      var parameter_annotations = [];
+      for (var j = 0; j < num_parameters; ++j) {
+        var num_annotations = reader.readU2();
+        var annotations = [];
+        for (var q = 0; q < num_annotations; ++q) {
+          annotations.push(read_annotation(constant_pool));
+        }
+        info.annotations = annotations;
+
+        parameter_annotations.push(annotations);
+      }
+      info.parameter_annotations = parameter_annotations;
       break;
     case "Synthetic":
     case "Depricated":
